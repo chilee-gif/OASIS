@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+    <script src="a_data/html-to-image.min.js" integrity="sha512-iZ2ORl595Wx6miw+GuadDet4WQbdSWS3JLMoNfY8cRGoEFy6oT3G9IbcrBeL6AfkgpA51ETt/faX6yLV+/gFJg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script>
+      (function() {
+        const originalConsole = window.console;
+        window.console = {
+          log: (...args) => {
+            originalConsole.log(...args);
+            window.parent.postMessage({ type: 'console', message: args.join(' ') }, '*');
+          },
+          error: (...args) => {
+            originalConsole.error(...args);
+            window.parent.postMessage({ type: 'console', message: 'Error: ' + args.join(' ') }, '*');
+          },
+          warn: (...args) => {
+            originalConsole.warn(...args);
+            window.parent.postMessage({ type: 'console', message: 'Warning: ' + args.join(' ') }, '*');
+          }
+        };
+
+        let requestId = 0;
+        let callbacksMap = new Map();
+        let streamControllers = new Map();
+        
+        window.claude = {
+          complete: (prompt) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'claudeComplete', id, prompt }, '*');
+            });
+          }
+        };
+
+        window.storage = {
+          get: (key, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageGet', id, key, shared }, '*');
+            });
+          },
+          set: (key, value, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageSet', id, key, value, shared }, '*');
+            });
+          },
+          delete: (key, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageDelete', id, key, shared }, '*');
+            });
+          },
+          list: (prefix, shared = false) => {
+            return new Promise((resolve, reject) => {
+              const id = requestId++;
+              callbacksMap.set(id, { resolve, reject });
+              window.parent.postMessage({ type: 'storageList', id, prefix, shared }, '*');
+            });
+          }
+        };
+
+        let pendingBlobs = new Map();
+        URL.createObjectURL = (blob) => {
+          // Store the blob and create an ID and URL for it
+          const blobId = `blob-${Date.now()}-${Math.random()}`;
+          pendingBlobs.set(blobId, blob);
+          return `blob-request://${blobId}`;
+        };
+
+        URL.revokeObjectURL = (url) => {
+          // Remove the blob from our store
+          const blobId = url.replace("blob-request://", "");
+          pendingBlobs.delete(blobId);
+        };
+
+        const getBlobFromURL = (url) => {
+          const blobId = url.replace("blob-request://", "");
+          return pendingBlobs.get(blobId);
+        };
+
+        // Override global fetch with streaming support
+        window.fetch = (url, init = {}) => {
+          return new Promise((resolve, reject) => {
+            const id = requestId++;
+            const channelId = `fetch-${id}-${Date.now()}`;
+            
+            callbacksMap.set(id, { 
+              resolve: (response) => {
+                // Create a ReadableStream for the response body
+                const stream = new ReadableStream({
+                  start(controller) {
+                    streamControllers.set(channelId, controller);
+                  },
+                  cancel() {
+                    streamControllers.delete(channelId);
+                  }
+                });
+                
+                // Create and return the Response with the stream
+                resolve(new Response(stream, {
+                  status: response.status,
+                  statusText: response.statusText,
+                  headers: response.headers
+                }));
+              },
+              reject,
+              channelId
+            });
+            
+            window.parent.postMessage({
+              type: 'proxyFetch',
+              id,
+              url,
+              init,
+              channelId
+            }, '*');
+          });
+        };
+
+        window.addEventListener('message', async (event) => {
+          if (event.data.type === 'takeScreenshot') {
+            const rootElement = document.getElementById('artifacts-component-root-html');
+            if (!rootElement) {
+              window.parent.postMessage({
+                type: 'screenshotError',
+                error: new Error('Root element not found'),
+              }, '*');
+            }
+            const screenshot = await htmlToImage.toPng(rootElement, {
+              imagePlaceholder:
+                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAAAA1JREFUGFdjePDgwX8ACOQDoNsk0PMAAAAASUVORK5CYII=",
+            });
+            window.parent.postMessage({
+              type: 'screenshotData',
+              data: screenshot,
+            }, '*');
+          } else if (event.data.type === 'claudeComplete') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.completion);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'proxyFetchResponse') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+              callbacksMap.delete(event.data.id);
+            } else {
+              // Initial response with headers, status, etc.
+              callback.resolve({
+                status: event.data.status,
+                statusText: event.data.statusText,
+                headers: event.data.headers
+              });
+              // Don't delete the callback yet if streaming
+              if (!event.data.body) {
+                callbacksMap.delete(event.data.id);
+              }
+            }
+          } else if (event.data.type === 'proxyFetchStream') {
+            // Handle streaming data chunks
+            const controller = streamControllers.get(event.data.channelId);
+            if (controller) {
+              if (event.data.error) {
+                controller.error(new Error(event.data.error));
+                streamControllers.delete(event.data.channelId);
+              } else if (event.data.done) {
+                controller.close();
+                streamControllers.delete(event.data.channelId);
+                // Clean up the callback
+                const callback = Array.from(callbacksMap.entries()).find(
+                  ([_, value]) => value.channelId === event.data.channelId
+                );
+                if (callback) {
+                  callbacksMap.delete(callback[0]);
+                }
+              } else if (event.data.chunk) {
+                controller.enqueue(new Uint8Array(event.data.chunk));
+              }
+            }
+          } else if (event.data.type === 'storageGet') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageSet') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageDelete') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          } else if (event.data.type === 'storageList') {
+            const callback = callbacksMap.get(event.data.id);
+            if (event.data.error) {
+              callback.reject(new Error(event.data.error));
+            } else {
+              callback.resolve(event.data.result);
+            }
+            callbacksMap.delete(event.data.id);
+          }
+        });
+
+        window.addEventListener('click', (event) => {
+          const isEl = event.target instanceof HTMLElement;
+          if (!isEl) return;
+    
+          // find ancestor links
+          const linkEl = event.target.closest("a");
+          if (!linkEl || !linkEl.href) return;
+    
+          event.preventDefault();
+          event.stopImmediatePropagation();
+    
+          if (linkEl.href.startsWith("blob-request:")) {
+            const blob = getBlobFromURL(linkEl.href);
+            if (!blob) return;
+            void blob.arrayBuffer().then((data) => {
+              window.parent.postMessage({
+                type: "downloadFile",
+                filename: linkEl.download,
+                data,
+                mimeType: blob.type || "application/octet-stream",
+              });
+            });
+          } else if (linkEl.href.startsWith("data:")) {
+            const [header, base64Data] = linkEl.href.split(",");
+            const mimeMatch = header.match(/data:([^;]+)/);
+            const mimeType = mimeMatch ? mimeMatch[1] : "application/octet-stream";
+            const binaryString = atob(base64Data);
+            const data = Uint8Array.from(binaryString, (c) =>
+              c.charCodeAt(0),
+            ).buffer;
+            window.parent.postMessage({
+              type: "downloadFile",
+              filename: linkEl.download,
+              data,
+              mimeType,
+            });
+          } else {
+            let linkUrl;
+            try {
+              linkUrl = new URL(linkEl.href);
+            } catch (error) {
+              return;
+            }
+    
+            if (linkUrl.hostname === window.location.hostname) return;
+      
+            window.parent.postMessage({
+              type: 'openExternal',
+              href: linkEl.href,
+            }, '*');
+          }
+      });
+
+        const originalOpen = window.open;
+        window.open = function (url) {
+          window.parent.postMessage({
+            type: "openExternal",
+            href: url,
+          }, "*");
+        };
+
+        window.addEventListener('error', (event) => {
+          window.parent.postMessage({ type: 'console', message: 'Uncaught Error: ' + event.message }, '*');
+        });
+      })();
+    </script>
+  
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Site Area Planner — BCN Market Reference</title>
+<link href="a_data/css2.css" rel="stylesheet">
+<style>
+:root {
+  --bg: #0e0e0e;
+  --surface: #161616;
+  --surface2: #1e1e1e;
+  --border: #2a2a2a;
+  --text: #e8e2d6;
+  --muted: #5a5550;
+  --dim: #3a3530;
+
+  --z1: #e8c547;   /* Digital Market — gold */
+  --z2: #e05a2b;   /* MeGa Market — burnt orange */
+  --z3: #c84b8f;   /* REGIONAL Market — magenta */
+  --z4: #4b9ec8;   /* Educational Center — blue */
+  --z5: #8bc84b;   /* Opera/Entertainment — green */
+  --z6: #7b6ee8;   /* Open Air — violet */
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'IBM Plex Mono', monospace;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding: 2rem;
+}
+
+/* ── Header ── */
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1.2rem;
+  margin-bottom: 2rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.logo {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 3rem;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: var(--text);
+}
+.logo span { color: var(--z1); }
+.tagline {
+  font-size: 0.65rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ── Site input ── */
+.site-bar {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 1rem;
+  margin-bottom: 2rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 1.2rem;
+  align-items: end;
+}
+.field label {
+  display: block;
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.4rem;
+}
+input[type=number] {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 1.1rem;
+  padding: 0.55rem 0.8rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+input[type=number]:focus { border-color: var(--z1); }
+button.calc {
+  background: var(--z1);
+  color: #000;
+  border: none;
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 1.2rem;
+  letter-spacing: 0.1em;
+  padding: 0.55rem 2rem;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+button.calc:hover { opacity: 0.85; }
+
+/* ── Stats row ── */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.8rem;
+  margin-bottom: 2rem;
+}
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 1rem;
+}
+.stat-label { font-size: 0.58rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.4rem; }
+.stat-value { font-family: 'Bebas Neue', sans-serif; font-size: 2rem; line-height: 1; }
+.stat-sub { font-size: 0.62rem; color: var(--muted); margin-top: 0.2rem; }
+.stat.highlight { border-color: var(--z1); }
+.stat.highlight .stat-value { color: var(--z1); }
+
+/* ── Main layout ── */
+.main {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+/* ── Zone cards ── */
+.zones { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.zone-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--zc);
+  display: grid;
+  grid-template-columns: 2.5rem 1fr auto auto auto;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  transition: background 0.15s;
+  cursor: pointer;
+}
+.zone-card:hover { background: var(--surface2); }
+.zone-card.active { background: var(--surface2); border-color: var(--zc); }
+
+.zone-num {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 1.6rem;
+  color: var(--zc);
+  line-height: 1;
+  text-align: center;
+}
+.zone-info {}
+.zone-name { font-family: 'IBM Plex Sans', sans-serif; font-size: 0.85rem; font-weight: 500; margin-bottom: 0.15rem; }
+.zone-ref { font-size: 0.6rem; color: var(--muted); letter-spacing: 0.06em; }
+.zone-pct { font-size: 0.72rem; color: var(--zc); font-weight: 500; text-align: right; min-width: 48px; }
+.zone-area { font-size: 1.05rem; font-weight: 500; text-align: right; min-width: 90px; }
+.zone-m2 { font-size: 0.6rem; color: var(--muted); }
+
+.zone-bar-wrap { grid-column: 1 / -1; margin-top: 0.4rem; display: none; }
+.zone-card.active .zone-bar-wrap { display: block; }
+.zone-bar-bg { background: var(--dim); height: 4px; border-radius: 2px; }
+.zone-bar-fill { height: 100%; border-radius: 2px; background: var(--zc); transition: width 0.6s ease; }
+
+.zone-detail {
+  grid-column: 1 / -1;
+  display: none;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+  margin-top: 0.4rem;
+}
+.zone-card.active .zone-detail { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.8rem; }
+.detail-item { }
+.detail-label { font-size: 0.55rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.2rem; }
+.detail-val { font-size: 0.82rem; }
+
+/* ── Slider for ratio ── */
+.slider-wrap {
+  grid-column: 1 / -1;
+  display: none;
+  align-items: center;
+  gap: 0.8rem;
+  padding-top: 0.5rem;
+}
+.zone-card.active .slider-wrap { display: flex; }
+input[type=range] {
+  flex: 1;
+  accent-color: var(--zc);
+  cursor: pointer;
+}
+.slider-label { font-size: 0.62rem; color: var(--muted); white-space: nowrap; }
+.slider-val { font-size: 0.78rem; color: var(--zc); min-width: 36px; text-align: right; }
+
+/* ── Side panel ── */
+.side { display: flex; flex-direction: column; gap: 1rem; }
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.panel-head {
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  padding: 0.6rem 1rem;
+  font-size: 0.6rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+}
+.panel-body { padding: 1rem; }
+
+/* Donut chart */
+.donut-wrap { display: flex; justify-content: center; margin-bottom: 1rem; position: relative; }
+.donut-center {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+.donut-center-val { font-family: 'Bebas Neue', sans-serif; font-size: 1.6rem; line-height: 1; }
+.donut-center-label { font-size: 0.55rem; color: var(--muted); letter-spacing: 0.08em; }
+
+/* Legend */
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.72rem;
+}
+.legend-row:last-child { border-bottom: none; }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.legend-name { flex: 1; font-size: 0.68rem; color: var(--text); }
+.legend-pct { color: var(--muted); font-size: 0.65rem; min-width: 40px; text-align: right; }
+.legend-area { font-size: 0.68rem; min-width: 70px; text-align: right; }
+
+/* BCN ref table */
+.ref-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.68rem;
+  align-items: center;
+}
+.ref-row:last-child { border-bottom: none; }
+.ref-tag {
+  font-size: 0.55rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 1px;
+  background: var(--dim);
+  color: var(--muted);
+  margin-left: 0.4rem;
+}
+.ref-tag.match { background: #1a2a10; color: var(--z5); }
+
+/* Allocation check */
+.alloc-bar {
+  height: 8px;
+  background: var(--dim);
+  border-radius: 2px;
+  margin: 1rem 0 0.4rem;
+  overflow: hidden;
+  display: flex;
+}
+.alloc-seg { height: 100%; transition: width 0.4s; }
+.alloc-info {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.62rem;
+}
+.alloc-used { color: var(--z1); }
+.alloc-remain { color: var(--muted); }
+.alloc-warn { color: #e05a2b; }
+
+/* warnings */
+.warning {
+  background: #1a0e0a;
+  border: 1px solid #e05a2b55;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.65rem;
+  color: #e05a2b;
+  margin-top: 0.6rem;
+  display: none;
+}
+.warning.show { display: block; }
+
+@media (max-width: 900px) {
+  .main { grid-template-columns: 1fr; }
+  .stats { grid-template-columns: 1fr 1fr; }
+  .site-bar { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body id="artifacts-component-root-html">
+
+<header>
+  <div>
+    <div class="logo">SITE<span>×</span>MARKET</div>
+    <div class="tagline">Area Distribution Planner — BCN Market Reference System</div>
+  </div>
+  <div class="tagline" style="text-align:right;">
+    Highway Junction Triangle Site / B-22 · C-31<br>
+    6 Market Zones · Hierarchical Layout
+  </div>
+</header>
+
+<div class="site-bar">
+  <div class="field">
+    <label>Total Site Area (m²)</label>
+    <input type="number" id="siteArea" value="25000" min="1000" step="500">
+  </div>
+  <div class="field">
+    <label>Open Air Reserved (%)</label>
+    <input type="number" id="openAirPct" value="30" min="10" max="60" step="5">
+  </div>
+  <button class="calc" onclick="calculate()">CALCULATE</button>
+</div>
+
+<div class="stats">
+  <div class="stat highlight">
+    <div class="stat-label">Site Area</div>
+    <div class="stat-value" id="s-site">25.000</div>
+    <div class="stat-sub">m² total</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Buildable Area</div>
+    <div class="stat-value" id="s-build">17.500</div>
+    <div class="stat-sub">m² (excl. open air)</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">BCN Market Average</div>
+    <div class="stat-value">4,281</div>
+    <div class="stat-sub">m² (official PDF avg)</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Equivalent Scale</div>
+    <div class="stat-value" id="s-equiv">5.8</div>
+    <div class="stat-sub">BCN standard markets</div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="zones" id="zonesContainer"><div class="zone-card" style="--zc: var(--z1);">
+      <div class="zone-num">01</div>
+      <div class="zone-info">
+        <div class="zone-name">Digital Market</div>
+        <div class="zone-ref">Core digital trading market</div>
+      </div>
+      <div class="zone-pct">18%</div>
+      <div>
+        <div class="zone-area">4.500</div>
+        <div class="zone-m2">m²</div>
+      </div>
+      <div style="width:60px;">
+        <div class="zone-bar-bg" style="background:var(--dim);height:4px;border-radius:2px;">
+          <div style="width:60.0%;height:100%;background:#e8c547;border-radius:2px;transition:width 0.4s;"></div>
+        </div>
+      </div>
+
+      <div style="grid-column:1/-1;display:none;grid-template-columns:1fr 1fr 1fr;gap:0.8rem;padding-top:0.6rem;border-top:1px solid var(--border);margin-top:0.2rem;">
+        <div><div class="detail-label">BCN Reference</div><div class="detail-val" style="font-size:0.7rem;color:#e8c547;">Sant Antoni (7,741m²) / Boqueria (6,089m²)</div></div>
+        <div><div class="detail-label">Spatial Character</div><div class="detail-val" style="font-size:0.72rem;">High density / Multi-level / All-hours</div></div>
+        <div><div class="detail-label">Site Position</div><div class="detail-val" style="font-size:0.72rem;">Central core node</div></div>
+        <div style="grid-column:1/-1;"><div class="detail-label">Recommended Program</div><div class="detail-val" style="font-size:0.72rem;">Stalls · Digital displays · Trading hall</div></div>
+        <div style="grid-column:1/-1;display:flex;align-items:center;gap:0.8rem;padding-top:0.4rem;">
+          <span class="slider-label">Adjust ratio</span>
+          <input type="range" min="3" max="40" step="1" value="18" style="flex:1;accent-color:#e8c547;" oninput="adjustPct(0, this.value)">
+          <span style="font-size:0.78rem;color:#e8c547;min-width:36px;text-align:right;" id="slv-0">18%</span>
+        </div>
+      </div>
+    </div><div class="zone-card" style="--zc: var(--z2);">
+      <div class="zone-num">02</div>
+      <div class="zone-info">
+        <div class="zone-name">MeGa Market</div>
+        <div class="zone-ref">Large-scale general market</div>
+      </div>
+      <div class="zone-pct">22%</div>
+      <div>
+        <div class="zone-area">5.500</div>
+        <div class="zone-m2">m²</div>
+      </div>
+      <div style="width:60px;">
+        <div class="zone-bar-bg" style="background:var(--dim);height:4px;border-radius:2px;">
+          <div style="width:73.3%;height:100%;background:#e05a2b;border-radius:2px;transition:width 0.4s;"></div>
+        </div>
+      </div>
+
+      <div style="grid-column:1/-1;display:none;grid-template-columns:1fr 1fr 1fr;gap:0.8rem;padding-top:0.6rem;border-top:1px solid var(--border);margin-top:0.2rem;">
+        <div><div class="detail-label">BCN Reference</div><div class="detail-val" style="font-size:0.7rem;color:#e05a2b;">Sagrada Família (26,000m²) / Port (10,058m²)</div></div>
+        <div><div class="detail-label">Spatial Character</div><div class="detail-val" style="font-size:0.72rem;">Long-span / Single-floor / Linear</div></div>
+        <div><div class="detail-label">Site Position</div><div class="detail-val" style="font-size:0.72rem;">Along main arterial road</div></div>
+        <div style="grid-column:1/-1;"><div class="detail-label">Recommended Program</div><div class="detail-val" style="font-size:0.72rem;">Fresh produce · Daily goods · Large stalls</div></div>
+        <div style="grid-column:1/-1;display:flex;align-items:center;gap:0.8rem;padding-top:0.4rem;">
+          <span class="slider-label">Adjust ratio</span>
+          <input type="range" min="3" max="40" step="1" value="22" style="flex:1;accent-color:#e05a2b;" oninput="adjustPct(1, this.value)">
+          <span style="font-size:0.78rem;color:#e05a2b;min-width:36px;text-align:right;" id="slv-1">22%</span>
+        </div>
+      </div>
+    </div><div class="zone-card" style="--zc: var(--z3);">
+      <div class="zone-num">03</div>
+      <div class="zone-info">
+        <div class="zone-name">REGIONAL Market</div>
+        <div class="zone-ref">Regional specialty market</div>
+      </div>
+      <div class="zone-pct">15%</div>
+      <div>
+        <div class="zone-area">3.750</div>
+        <div class="zone-m2">m²</div>
+      </div>
+      <div style="width:60px;">
+        <div class="zone-bar-bg" style="background:var(--dim);height:4px;border-radius:2px;">
+          <div style="width:50.0%;height:100%;background:#c84b8f;border-radius:2px;transition:width 0.4s;"></div>
+        </div>
+      </div>
+
+      <div style="grid-column:1/-1;display:none;grid-template-columns:1fr 1fr 1fr;gap:0.8rem;padding-top:0.6rem;border-top:1px solid var(--border);margin-top:0.2rem;">
+        <div><div class="detail-label">BCN Reference</div><div class="detail-val" style="font-size:0.7rem;color:#c84b8f;">Ninot (6,037m²) / Galvany (5,504m²)</div></div>
+        <div><div class="detail-label">Spatial Character</div><div class="detail-val" style="font-size:0.72rem;">Mid-scale / Standalone / Distinctive</div></div>
+        <div><div class="detail-label">Site Position</div><div class="detail-val" style="font-size:0.72rem;">Secondary transport node</div></div>
+        <div style="grid-column:1/-1;"><div class="detail-label">Recommended Program</div><div class="detail-val" style="font-size:0.72rem;">Local specialties · Crafts · Weekend market</div></div>
+        <div style="grid-column:1/-1;display:flex;align-items:center;gap:0.8rem;padding-top:0.4rem;">
+          <span class="slider-label">Adjust ratio</span>
+          <input type="range" min="3" max="40" step="1" value="15" style="flex:1;accent-color:#c84b8f;" oninput="adjustPct(2, this.value)">
+          <span style="font-size:0.78rem;color:#c84b8f;min-width:36px;text-align:right;" id="slv-2">15%</span>
+        </div>
+      </div>
+    </div><div class="zone-card" style="--zc: var(--z4);">
+      <div class="zone-num">04</div>
+      <div class="zone-info">
+        <div class="zone-name">Educational Center</div>
+        <div class="zone-ref">Education · Exhibition · Workshops</div>
+      </div>
+      <div class="zone-pct">12%</div>
+      <div>
+        <div class="zone-area">3.000</div>
+        <div class="zone-m2">m²</div>
+      </div>
+      <div style="width:60px;">
+        <div class="zone-bar-bg" style="background:var(--dim);height:4px;border-radius:2px;">
+          <div style="width:40.0%;height:100%;background:#4b9ec8;border-radius:2px;transition:width 0.4s;"></div>
+        </div>
+      </div>
+
+      <div style="grid-column:1/-1;display:none;grid-template-columns:1fr 1fr 1fr;gap:0.8rem;padding-top:0.6rem;border-top:1px solid var(--border);margin-top:0.2rem;">
+        <div><div class="detail-label">BCN Reference</div><div class="detail-val" style="font-size:0.7rem;color:#4b9ec8;">Abaceria Central (4,034m²) / Concepció (4,320m²)</div></div>
+        <div><div class="detail-label">Spatial Character</div><div class="detail-val" style="font-size:0.72rem;">Flexible / Multi-purpose</div></div>
+        <div><div class="detail-label">Site Position</div><div class="detail-val" style="font-size:0.72rem;">Quiet end of site</div></div>
+        <div style="grid-column:1/-1;"><div class="detail-label">Recommended Program</div><div class="detail-val" style="font-size:0.72rem;">Workshops · Exhibition hall · Cooking classes</div></div>
+        <div style="grid-column:1/-1;display:flex;align-items:center;gap:0.8rem;padding-top:0.4rem;">
+          <span class="slider-label">Adjust ratio</span>
+          <input type="range" min="3" max="40" step="1" value="12" style="flex:1;accent-color:#4b9ec8;" oninput="adjustPct(3, this.value)">
+          <span style="font-size:0.78rem;color:#4b9ec8;min-width:36px;text-align:right;" id="slv-3">12%</span>
+        </div>
+      </div>
+    </div><div class="zone-card" style="--zc: var(--z5);">
+      <div class="zone-num">05</div>
+      <div class="zone-info">
+        <div class="zone-name">Opera Entertainment</div>
+        <div class="zone-ref">Performance · Entertainment · F&amp;B</div>
+      </div>
+      <div class="zone-pct">10%</div>
+      <div>
+        <div class="zone-area">2.500</div>
+        <div class="zone-m2">m²</div>
+      </div>
+      <div style="width:60px;">
+        <div class="zone-bar-bg" style="background:var(--dim);height:4px;border-radius:2px;">
+          <div style="width:33.3%;height:100%;background:#8bc84b;border-radius:2px;transition:width 0.4s;"></div>
+        </div>
+      </div>
+
+      <div style="grid-column:1/-1;display:none;grid-template-columns:1fr 1fr 1fr;gap:0.8rem;padding-top:0.6rem;border-top:1px solid var(--border);margin-top:0.2rem;">
+        <div><div class="detail-label">BCN Reference</div><div class="detail-val" style="font-size:0.7rem;color:#8bc84b;">Carmel (10,921m²) / Sant Gervasi (6,677m²)</div></div>
+        <div><div class="detail-label">Spatial Character</div><div class="detail-val" style="font-size:0.72rem;">High-ceiling / Stage presence / Night activation</div></div>
+        <div><div class="detail-label">Site Position</div><div class="detail-val" style="font-size:0.72rem;">Entertainment circuit endpoint</div></div>
+        <div style="grid-column:1/-1;"><div class="detail-label">Recommended Program</div><div class="detail-val" style="font-size:0.72rem;">Performance hall · Bars · Pop-up dining</div></div>
+        <div style="grid-column:1/-1;display:flex;align-items:center;gap:0.8rem;padding-top:0.4rem;">
+          <span class="slider-label">Adjust ratio</span>
+          <input type="range" min="3" max="40" step="1" value="10" style="flex:1;accent-color:#8bc84b;" oninput="adjustPct(4, this.value)">
+          <span style="font-size:0.78rem;color:#8bc84b;min-width:36px;text-align:right;" id="slv-4">10%</span>
+        </div>
+      </div>
+    </div><div class="zone-card" style="--zc: var(--z6);">
+      <div class="zone-num">06</div>
+      <div class="zone-info">
+        <div class="zone-name">Open Air</div>
+        <div class="zone-ref">Outdoor market · Landscape plaza</div>
+      </div>
+      <div class="zone-pct">30%</div>
+      <div>
+        <div class="zone-area">7.500</div>
+        <div class="zone-m2">m²</div>
+      </div>
+      <div style="width:60px;">
+        <div class="zone-bar-bg" style="background:var(--dim);height:4px;border-radius:2px;">
+          <div style="width:100.0%;height:100%;background:#7b6ee8;border-radius:2px;transition:width 0.4s;"></div>
+        </div>
+      </div>
+
+      <div style="grid-column:1/-1;display:none;grid-template-columns:1fr 1fr 1fr;gap:0.8rem;padding-top:0.6rem;border-top:1px solid var(--border);margin-top:0.2rem;">
+        <div><div class="detail-label">BCN Reference</div><div class="detail-val" style="font-size:0.7rem;color:#7b6ee8;">Boqueria outdoor · Plaza-type markets</div></div>
+        <div><div class="detail-label">Spatial Character</div><div class="detail-val" style="font-size:0.72rem;">Permeable / Flexible / Seasonal</div></div>
+        <div><div class="detail-label">Site Position</div><div class="detail-val" style="font-size:0.72rem;">Junction buffer + road interface</div></div>
+        <div style="grid-column:1/-1;"><div class="detail-label">Recommended Program</div><div class="detail-val" style="font-size:0.72rem;">Temporary stalls · Event plaza · Green belt</div></div>
+        <div style="grid-column:1/-1;display:flex;align-items:center;gap:0.8rem;padding-top:0.4rem;">
+          <span class="slider-label">Adjust ratio</span>
+          <input type="range" min="3" max="40" step="1" value="30" style="flex:1;accent-color:#7b6ee8;" oninput="adjustPct(5, this.value)">
+          <span style="font-size:0.78rem;color:#7b6ee8;min-width:36px;text-align:right;" id="slv-5">30%</span>
+        </div>
+      </div>
+    </div></div>
+
+  <div class="side">
+    <!-- Donut -->
+    <div class="panel">
+      <div class="panel-head"><span>Area Distribution</span><span id="totalCheck">107%</span></div>
+      <div class="panel-body">
+        <div class="donut-wrap">
+          <svg id="donut" width="180" height="180"><path d="M 90 15 A 75 75 0 0 1 155.31579728428895 53.13746312151492 L 135.28561945044032 64.44197443091701 A 52 52 0 0 0 90 38 Z" fill="#e8c547" opacity="0.9"></path><path d="M 155.31579728428895 53.13746312151492 A 75 75 0 0 1 143.42084772669472 142.6423121468016 L 127.03845442384167 126.49866975511578 A 52 52 0 0 0 135.28561945044032 64.44197443091701 Z" fill="#e05a2b" opacity="0.9"></path><path d="M 143.42084772669472 142.6423121468016 A 75 75 0 0 1 83.40238615641029 164.7092463592752 L 85.42565440177779 141.79841080909745 A 52 52 0 0 0 127.03845442384167 126.49866975511578 Z" fill="#c84b8f" opacity="0.9"></path><path d="M 83.40238615641029 164.7092463592752 A 75 75 0 0 1 36.579152273305304 142.64231214680163 L 52.96154557615834 126.4986697551158 A 52 52 0 0 0 85.42565440177779 141.79841080909745 Z" fill="#4b9ec8" opacity="0.9"></path><path d="M 36.579152273305304 142.64231214680163 A 75 75 0 0 1 16.36166924792613 104.22660339111809 L 38.94409067856212 99.8637783511752 A 52 52 0 0 0 52.96154557615834 126.4986697551158 Z" fill="#8bc84b" opacity="0.9"></path><path d="M 16.36166924792613 104.22660339111809 A 75 75 0 0 1 89.99999999999999 15 L 89.99999999999999 38 A 52 52 0 0 0 38.94409067856212 99.8637783511752 Z" fill="#7b6ee8" opacity="0.9"></path></svg>
+          <div class="donut-center">
+            <div class="donut-center-val" id="donutVal">100%</div>
+            <div class="donut-center-label">ALLOCATED</div>
+          </div>
+        </div>
+        <div id="legend"><div class="legend-row">
+      <div class="legend-dot" style="background:#e8c547;"></div>
+      <div class="legend-name">Digital Market</div>
+      <div class="legend-pct">18%</div>
+      <div class="legend-area">4.500 m²</div>
+    </div><div class="legend-row">
+      <div class="legend-dot" style="background:#e05a2b;"></div>
+      <div class="legend-name">MeGa Market</div>
+      <div class="legend-pct">22%</div>
+      <div class="legend-area">5.500 m²</div>
+    </div><div class="legend-row">
+      <div class="legend-dot" style="background:#c84b8f;"></div>
+      <div class="legend-name">REGIONAL Market</div>
+      <div class="legend-pct">15%</div>
+      <div class="legend-area">3.750 m²</div>
+    </div><div class="legend-row">
+      <div class="legend-dot" style="background:#4b9ec8;"></div>
+      <div class="legend-name">Educational Center</div>
+      <div class="legend-pct">12%</div>
+      <div class="legend-area">3.000 m²</div>
+    </div><div class="legend-row">
+      <div class="legend-dot" style="background:#8bc84b;"></div>
+      <div class="legend-name">Opera Entertainment</div>
+      <div class="legend-pct">10%</div>
+      <div class="legend-area">2.500 m²</div>
+    </div><div class="legend-row">
+      <div class="legend-dot" style="background:#7b6ee8;"></div>
+      <div class="legend-name">Open Air</div>
+      <div class="legend-pct">30%</div>
+      <div class="legend-area">7.500 m²</div>
+    </div></div>
+        <div class="alloc-bar" id="allocBar"><div class="alloc-seg" style="width: 18%; background: rgb(232, 197, 71);"></div><div class="alloc-seg" style="width: 22%; background: rgb(224, 90, 43);"></div><div class="alloc-seg" style="width: 15%; background: rgb(200, 75, 143);"></div><div class="alloc-seg" style="width: 12%; background: rgb(75, 158, 200);"></div><div class="alloc-seg" style="width: 10%; background: rgb(139, 200, 75);"></div><div class="alloc-seg" style="width: 30%; background: rgb(123, 110, 232);"></div></div>
+        <div class="alloc-info">
+          <span class="alloc-used" id="allocUsed">Allocated: 26.750 m²</span>
+          <span id="allocRemain" style="color: rgb(224, 90, 43);">Over by: 1.750 m²</span>
+        </div>
+        <div class="warning show" id="warnOver">⚠ Allocation exceeds site area! Please adjust percentages.</div>
+        <div class="warning" id="warnUnder">ℹ Remaining area not yet allocated.</div>
+      </div>
+    </div>
+
+    <!-- BCN Reference -->
+    <div class="panel">
+      <div class="panel-head"><span>BCN Official Market Reference</span><span>PDF Source</span></div>
+      <div class="panel-body" id="bcnRef"><div class="ref-row">
+      <div>
+        <span>Sagrada Família</span>
+        <span class="ref-tag match" style="background:#e05a2b22;color:#e05a2b;">MeGa</span>
+      </div>
+      <div style="font-size:0.72rem;">26.000 m²</div>
+    </div><div class="ref-row">
+      <div>
+        <span>Carmel</span>
+        <span class="ref-tag match" style="background:#8bc84b22;color:#8bc84b;">Opera</span>
+      </div>
+      <div style="font-size:0.72rem;">10.921 m²</div>
+    </div><div class="ref-row">
+      <div>
+        <span>Port</span>
+        <span class="ref-tag match" style="background:#e05a2b22;color:#e05a2b;">MeGa</span>
+      </div>
+      <div style="font-size:0.72rem;">10.058 m²</div>
+    </div><div class="ref-row">
+      <div>
+        <span>Sant Antoni</span>
+        <span class="ref-tag match" style="background:#e8c54722;color:#e8c547;">Digital</span>
+      </div>
+      <div style="font-size:0.72rem;">7.741 m²</div>
+    </div><div class="ref-row">
+      <div>
+        <span>Sant Gervasi</span>
+        <span class="ref-tag match" style="background:#8bc84b22;color:#8bc84b;">Opera</span>
+      </div>
+      <div style="font-size:0.72rem;">6.677 m²</div>
+    </div><div class="ref-row">
+      <div>
+        <span>Boqueria</span>
+        <span class="ref-tag match" style="background:#e8c54722;color:#e8c547;">Digital</span>
+      </div>
+      <div style="font-size:0.72rem;">6.089 m²</div>
+    </div><div class="ref-row">
+      <div>
+        <span>Ninot</span>
+        <span class="ref-tag match" style="background:#c84b8f22;color:#c84b8f;">REGIONAL</span>
+      </div>
+      <div style="font-size:0.72rem;">6.037 m²</div>
+    </div><div class="ref-row">
+      <div>
+        <span>Vall d'Hebron</span>
+        <span class="ref-tag">—</span>
+      </div>
+      <div style="font-size:0.72rem;">5.508 m²</div>
+    </div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const zones = [
+  {
+    id: 'digital',
+    name: 'Digital Market',
+    subtitle: 'Core digital trading market',
+    color: 'var(--z1)',
+    hex: '#e8c547',
+    defaultPct: 18,
+    icon: '⬡',
+    refMarkets: ['Sant Antoni (7,741m²)', 'Boqueria (6,089m²)'],
+    refAvg: 6915,
+    character: 'High density / Multi-level / All-hours',
+    position: 'Central core node',
+    program: 'Stalls · Digital displays · Trading hall',
+  },
+  {
+    id: 'mega',
+    name: 'MeGa Market',
+    subtitle: 'Large-scale general market',
+    color: 'var(--z2)',
+    hex: '#e05a2b',
+    defaultPct: 22,
+    icon: '▬',
+    refMarkets: ['Sagrada Família (26,000m²)', 'Port (10,058m²)'],
+    refAvg: 18029,
+    character: 'Long-span / Single-floor / Linear',
+    position: 'Along main arterial road',
+    program: 'Fresh produce · Daily goods · Large stalls',
+  },
+  {
+    id: 'regional',
+    name: 'REGIONAL Market',
+    subtitle: 'Regional specialty market',
+    color: 'var(--z3)',
+    hex: '#c84b8f',
+    defaultPct: 15,
+    icon: '◈',
+    refMarkets: ['Ninot (6,037m²)', 'Galvany (5,504m²)'],
+    refAvg: 5770,
+    character: 'Mid-scale / Standalone / Distinctive',
+    position: 'Secondary transport node',
+    program: 'Local specialties · Crafts · Weekend market',
+  },
+  {
+    id: 'education',
+    name: 'Educational Center',
+    subtitle: 'Education · Exhibition · Workshops',
+    color: 'var(--z4)',
+    hex: '#4b9ec8',
+    defaultPct: 12,
+    icon: '◻',
+    refMarkets: ['Abaceria Central (4,034m²)', 'Concepció (4,320m²)'],
+    refAvg: 4177,
+    character: 'Flexible / Multi-purpose',
+    position: 'Quiet end of site',
+    program: 'Workshops · Exhibition hall · Cooking classes',
+  },
+  {
+    id: 'opera',
+    name: 'Opera Entertainment',
+    subtitle: 'Performance · Entertainment · F&B',
+    color: 'var(--z5)',
+    hex: '#8bc84b',
+    defaultPct: 10,
+    icon: '◉',
+    refMarkets: ['Carmel (10,921m²)', 'Sant Gervasi (6,677m²)'],
+    refAvg: 8799,
+    character: 'High-ceiling / Stage presence / Night activation',
+    position: 'Entertainment circuit endpoint',
+    program: 'Performance hall · Bars · Pop-up dining',
+  },
+  {
+    id: 'openair',
+    name: 'Open Air',
+    subtitle: 'Outdoor market · Landscape plaza',
+    color: 'var(--z6)',
+    hex: '#7b6ee8',
+    defaultPct: 23,
+    icon: '∿',
+    refMarkets: ['Boqueria outdoor · Plaza-type markets'],
+    refAvg: 3000,
+    character: 'Permeable / Flexible / Seasonal',
+    position: 'Junction buffer + road interface',
+    program: 'Temporary stalls · Event plaza · Green belt',
+  },
+];
+
+const BCN_REF = [
+  { name: 'Sagrada Família', area: 26000, zone: 'mega' },
+  { name: 'Carmel', area: 10921, zone: 'opera' },
+  { name: 'Port', area: 10058, zone: 'mega' },
+  { name: 'Sant Antoni', area: 7741, zone: 'digital' },
+  { name: 'Vall d\'Hebron', area: 5508, zone: null },
+  { name: 'Sant Gervasi', area: 6677, zone: 'opera' },
+  { name: 'Galvany', area: 5504, zone: 'regional' },
+  { name: 'Canyelles', area: 4771, zone: null },
+  { name: 'Sant Martí', area: 4642, zone: null },
+  { name: 'Abaceria', area: 4034, zone: 'education' },
+  { name: 'Sants', area: 4118, zone: null },
+  { name: 'Concepció', area: 4320, zone: 'education' },
+  { name: 'Ninot', area: 6037, zone: 'regional' },
+  { name: 'Boqueria', area: 6089, zone: 'digital' },
+  { name: 'Vallvidrera', area: 833, zone: null },
+  { name: 'Nuria', area: 546, zone: null },
+];
+
+let pcts = zones.map(z => z.defaultPct);
+let activeZone = null;
+
+function fmt(n) { return Math.round(n).toLocaleString('de-DE'); }
+
+function calculate() {
+  const site = parseFloat(document.getElementById('siteArea').value) || 25000;
+  const oaPct = parseFloat(document.getElementById('openAirPct').value) || 30;
+
+  // Force open air zone to match slider
+  pcts[5] = oaPct;
+  const buildable = site * (1 - oaPct / 100);
+
+  document.getElementById('s-site').textContent = fmt(site);
+  document.getElementById('s-build').textContent = fmt(buildable);
+  document.getElementById('s-equiv').textContent = (site / 4281).toFixed(1);
+
+  const total = pcts.reduce((a, b) => a + b, 0);
+  const areas = pcts.map(p => site * p / 100);
+
+  renderZones(site, areas, total);
+  renderDonut(areas, total, site);
+  renderLegend(areas, total);
+  renderAlloc(total, site, areas);
+  renderBCN(areas);
+}
+
+function renderZones(site, areas, total) {
+  const maxArea = Math.max(...areas);
+  const container = document.getElementById('zonesContainer');
+  container.innerHTML = '';
+
+  zones.forEach((z, i) => {
+    const card = document.createElement('div');
+    card.className = 'zone-card' + (activeZone === i ? ' active' : '');
+    card.style.setProperty('--zc', z.color);
+
+    const barW = (areas[i] / maxArea * 100).toFixed(1);
+
+    card.innerHTML = `
+      <div class="zone-num">${String(i+1).padStart(2,'0')}</div>
+      <div class="zone-info">
+        <div class="zone-name">${z.name}</div>
+        <div class="zone-ref">${z.subtitle}</div>
+      </div>
+      <div class="zone-pct">${pcts[i].toFixed(0)}%</div>
+      <div>
+        <div class="zone-area">${fmt(areas[i])}</div>
+        <div class="zone-m2">m²</div>
+      </div>
+      <div style="width:60px;">
+        <div class="zone-bar-bg" style="background:var(--dim);height:4px;border-radius:2px;">
+          <div style="width:${barW}%;height:100%;background:${z.hex};border-radius:2px;transition:width 0.4s;"></div>
+        </div>
+      </div>
+
+      <div style="grid-column:1/-1;display:${activeZone===i?'grid':'none'};grid-template-columns:1fr 1fr 1fr;gap:0.8rem;padding-top:0.6rem;border-top:1px solid var(--border);margin-top:0.2rem;">
+        <div><div class="detail-label">BCN Reference</div><div class="detail-val" style="font-size:0.7rem;color:${z.hex};">${z.refMarkets.join(' / ')}</div></div>
+        <div><div class="detail-label">Spatial Character</div><div class="detail-val" style="font-size:0.72rem;">${z.character}</div></div>
+        <div><div class="detail-label">Site Position</div><div class="detail-val" style="font-size:0.72rem;">${z.position}</div></div>
+        <div style="grid-column:1/-1;"><div class="detail-label">Recommended Program</div><div class="detail-val" style="font-size:0.72rem;">${z.program}</div></div>
+        <div style="grid-column:1/-1;display:flex;align-items:center;gap:0.8rem;padding-top:0.4rem;">
+          <span class="slider-label">Adjust ratio</span>
+          <input type="range" min="3" max="40" step="1" value="${pcts[i]}"
+            style="flex:1;accent-color:${z.hex};"
+            oninput="adjustPct(${i}, this.value)">
+          <span style="font-size:0.78rem;color:${z.hex};min-width:36px;text-align:right;" id="slv-${i}">${pcts[i]}%</span>
+        </div>
+      </div>
+    `;
+
+    card.addEventListener('click', (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      activeZone = (activeZone === i) ? null : i;
+      calculate();
+    });
+
+    container.appendChild(card);
+  });
+}
+
+function adjustPct(idx, val) {
+  pcts[idx] = parseFloat(val);
+  document.getElementById(`slv-${idx}`).textContent = val + '%';
+  calculate();
+}
+
+function renderDonut(areas, total, site) {
+  const svg = document.getElementById('donut');
+  svg.innerHTML = '';
+  const cx = 90, cy = 90, r = 75, inner = 52;
+  let cumAngle = -Math.PI / 2;
+
+  const totalArea = areas.reduce((a, b) => a + b, 0);
+  const usedPct = Math.min(100, (totalArea / site * 100));
+  document.getElementById('donutVal').textContent = Math.round(usedPct) + '%';
+
+  areas.forEach((a, i) => {
+    const frac = total > 0 ? (pcts[i] / total) : 0;
+    const angle = frac * 2 * Math.PI;
+    const x1 = cx + r * Math.cos(cumAngle);
+    const y1 = cy + r * Math.sin(cumAngle);
+    const x2 = cx + r * Math.cos(cumAngle + angle);
+    const y2 = cy + r * Math.sin(cumAngle + angle);
+    const xi1 = cx + inner * Math.cos(cumAngle);
+    const yi1 = cy + inner * Math.sin(cumAngle);
+    const xi2 = cx + inner * Math.cos(cumAngle + angle);
+    const yi2 = cy + inner * Math.sin(cumAngle + angle);
+    const large = angle > Math.PI ? 1 : 0;
+
+    if (frac > 0.002) {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', `M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} L ${xi2} ${yi2} A ${inner} ${inner} 0 ${large} 0 ${xi1} ${yi1} Z`);
+      path.setAttribute('fill', zones[i].hex);
+      path.setAttribute('opacity', '0.9');
+      svg.appendChild(path);
+    }
+    cumAngle += angle;
+  });
+}
+
+function renderLegend(areas, total) {
+  const leg = document.getElementById('legend');
+  leg.innerHTML = '';
+  zones.forEach((z, i) => {
+    const row = document.createElement('div');
+    row.className = 'legend-row';
+    row.innerHTML = `
+      <div class="legend-dot" style="background:${z.hex};"></div>
+      <div class="legend-name">${z.name}</div>
+      <div class="legend-pct">${pcts[i].toFixed(0)}%</div>
+      <div class="legend-area">${fmt(areas[i])} m²</div>
+    `;
+    leg.appendChild(row);
+  });
+}
+
+function renderAlloc(total, site, areas) {
+  const bar = document.getElementById('allocBar');
+  bar.innerHTML = '';
+  const usedPct = Math.min(100, total);
+
+  zones.forEach((z, i) => {
+    const seg = document.createElement('div');
+    seg.className = 'alloc-seg';
+    seg.style.width = Math.min(pcts[i], 100) + '%';
+    seg.style.background = z.hex;
+    bar.appendChild(seg);
+  });
+
+  const totalArea = areas.reduce((a, b) => a + b, 0);
+  const remain = site - totalArea;
+
+  document.getElementById('allocUsed').textContent = `Allocated: ${fmt(totalArea)} m²`;
+  document.getElementById('allocRemain').textContent = remain >= 0
+    ? `Remaining: ${fmt(remain)} m²`
+    : `Over by: ${fmt(-remain)} m²`;
+  document.getElementById('allocRemain').style.color = remain < 0 ? '#e05a2b' : 'var(--muted)';
+  document.getElementById('totalCheck').textContent = total.toFixed(0) + '%';
+
+  document.getElementById('warnOver').classList.toggle('show', total > 100);
+  document.getElementById('warnUnder').classList.toggle('show', total < 95 && total > 0);
+}
+
+function renderBCN(areas) {
+  const ref = document.getElementById('bcnRef');
+  ref.innerHTML = '';
+  const sorted = [...BCN_REF].sort((a, b) => b.area - a.area).slice(0, 8);
+  sorted.forEach(m => {
+    const z = m.zone ? zones.find(z => z.id === m.zone) : null;
+    const row = document.createElement('div');
+    row.className = 'ref-row';
+    row.innerHTML = `
+      <div>
+        <span>${m.name}</span>
+        ${z ? `<span class="ref-tag match" style="background:${z.hex}22;color:${z.hex};">${z.name.split(' ')[0]}</span>` : '<span class="ref-tag">—</span>'}
+      </div>
+      <div style="font-size:0.72rem;">${fmt(m.area)} m²</div>
+    `;
+    ref.appendChild(row);
+  });
+}
+
+calculate();
+</script>
+
+
+</body></html>

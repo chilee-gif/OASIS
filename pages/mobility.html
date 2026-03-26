@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>03 | Mobility & Isochrone Data</title>
+    <style>
+        body {
+            background-color: #111;
+            color: #f5f5f5;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 50px;
+            line-height: 1.8;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: #1c1c1e;
+            padding: 50px;
+            border-radius: 20px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+        }
+        .header-tag {
+            color: #00ffff;
+            font-size: 1rem;
+            letter-spacing: 2px;
+            margin-bottom: 10px;
+            display: inline-block;
+            border: 1px solid #00ffff;
+            padding: 5px 15px;
+            border-radius: 20px;
+            background: rgba(0,255,255,0.1);
+        }
+        h1 {
+            color: #fff;
+            font-size: 3.5rem;
+            margin-top: 0;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            font-size: 1.4rem;
+            color: #aaa;
+            margin-bottom: 40px;
+            border-bottom: 2px solid #333;
+            padding-bottom: 30px;
+        }
+        .data-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 40px;
+            margin-top: 40px;
+        }
+        .data-card {
+            background: #252528;
+            padding: 20px;
+            border-radius: 12px;
+            border-left: 5px solid;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+        .data-card.walking { border-color: #00ffff; }
+        .data-card.biking { border-color: #ffcc00; }
+        .data-card.driving { border-color: #ff00ff; }
+        .data-card.transit { border-color: #00ff00; }
+        
+        .data-card h3 {
+            margin-top: 0;
+            font-size: 1.5rem;
+            display: flex;
+            justify-content: space-between;
+        }
+        .data-card p {
+            color: #ccc;
+            font-size: 1rem;
+            margin-bottom: 0;
+        }
+        .metric {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #fff;
+        }
+        
+        .full-width-chart {
+            margin-top: 50px;
+            width: 100%;
+            background: #000;
+            border-radius: 12px;
+            padding: 20px;
+            box-sizing: border-box;
+            border: 1px solid #333;
+            text-align: center;
+        }
+        .full-width-chart img {
+            max-width: 100%;
+            border-radius: 8px;
+        }
+        .full-width-chart h3 {
+            color: #fff;
+            margin-bottom: 10px;
+        }
+
+        .back-btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #333;
+            color: white;
+            text-decoration: none;
+            border-radius: 30px;
+            margin-bottom: 30px;
+            transition: background 0.3s ease;
+        }
+        .back-btn:hover { background: #555; }
+        
+        /* 動畫展演區 */
+        .animation-showcase {
+            margin-top: 50px;
+            text-align: center;
+        }
+        .animation-showcase h3 {
+            font-size: 2rem;
+            color: #fff;
+            margin-bottom: 30px;
+            border-bottom: 1px dashed #444;
+            padding-bottom: 15px;
+        }
+        .gif-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+        }
+        .gif-card img {
+            width: 100%;
+            border-radius: 8px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.5);
+            transition: transform 0.3s ease;
+        }
+        .gif-card img:hover {
+            transform: scale(1.02);
+        }
+        .gif-card p {
+            margin-top: 15px;
+            font-weight: bold;
+            color: #fff;
+        }
+        
+        @media (max-width: 800px) {
+            .data-grid, .gif-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="../index.html" class="back-btn">← Back to Dashboard</a>
+        
+        <div class="header-tag">03 / MOBILITY DATA</div>
+        <h1>Isochrone Analysis</h1>
+        <div class="subtitle">Multimodal Reachability & Infrastructure Penetration at El Prat, Barcelona.</div>
+
+        <p>To accurately position the programmatic zones of The Highline Oasis, we conducted an extensive Python-based isochrone simulation (via OSMnx and NetworkX) of the surrounding infrastructural grid. The analysis visualizes spatial accessibility across different modes of transportation over a 30-minute threshold.</p>
+
+        <!-- 數據儀表板 -->
+        <div class="data-grid">
+            <div class="data-card walking">
+                <h3 style="color: #00ffff;">Walking <span>🚶</span></h3>
+                <p>Speed: <span class="metric">4.5 km/h (75 m/min)</span></p>
+                <p>Defines the immediate local catchment. The Highline Skywalk directly expands this footprint across the highway barrier.</p>
+            </div>
+            
+            <div class="data-card biking">
+                <h3 style="color: #ffcc00;">Cycling <span>🚲</span></h3>
+                <p>Speed: <span class="metric">15.0 km/h (250 m/min)</span></p>
+                <p>Forms the secondary regional connection. The site's open public spaces act as critical junctions for urban cycling routes.</p>
+            </div>
+            
+            <div class="data-card driving">
+                <h3 style="color: #ff00ff;">Driving <span>🚗</span></h3>
+                <p>Speed: <span class="metric">36.0 km/h (600 m/min)</span></p>
+                <p>Provides macroscopic regional access via the cloverleaf interchange, anchoring the logistics of the Mega Markets.</p>
+            </div>
+            
+            <div class="data-card transit">
+                <h3 style="color: #00ff00;">Public Transit <span>🚆</span></h3>
+                <p>Speed: <span class="metric">Walk + 3m Wait + Train (50 km/h)</span></p>
+                <p>The multimodal game-changer. Characterized by delayed initial reach but exponential long-distance connectivity.</p>
+            </div>
+        </div>
+
+        <!-- 綜合折線圖 -->
+        <div class="full-width-chart">
+            <h3>Time vs. Reachable Distance by Transport Mode</h3>
+            <img src="../transport_chart.png" alt="Transport Isochrone Chart">
+            <p style="margin-top: 15px; font-size: 0.95rem;">This mathematical model translates the slope of each line as the inverse of speed (Slope = 1/Speed). The flat horizontal segment of the Public Transit (Green) line perfectly visualizes the physical reality of waiting at a station platform.</p>
+        </div>
+
+        <!-- 動畫展演區 -->
+        <div class="animation-showcase">
+            <h3>Spatial Isochrone Simulations (0-30 Mins)</h3>
+            <p style="margin-bottom: 40px;">The following visualizations use Dijkstra's algorithm to map the actual street network penetrability from the site's center point.</p>
+            
+            <div class="gif-grid">
+                <div class="gif-card">
+                    
+<div style="overflow: hidden; border-radius: 8px; position: relative; padding-top: 100%;">
+    <img src="../Map_Isochrone_Data/walking_isochrone.gif" alt="Walking Isochrone Animation" style="position: absolute; top: -10%; left: 0; width: 100%; height: 110%; object-fit: cover; border-radius: 0;">
+</div>
+                    <p style="color: #00ffff;">Walking Expansion Radius</p>
+                </div>
+                <div class="gif-card">
+                    
+<div style="overflow: hidden; border-radius: 8px; position: relative; padding-top: 100%;">
+    <img src="../Map_Isochrone_Data/biking_isochrone.gif" alt="Cycling Isochrone Animation" style="position: absolute; top: -10%; left: 0; width: 100%; height: 110%; object-fit: cover; border-radius: 0;">
+</div>
+                    <p style="color: #ffcc00;">Cycling Expansion Radius</p>
+                </div>
+                <!-- 如果有開車或大眾運輸的 GIF 也可以隨時補上 -->
+                <!-- 
+                <div class="gif-card">
+                    
+<div style="overflow: hidden; border-radius: 8px; position: relative; padding-top: 100%;">
+    <img src="../Map_Isochrone_Data/driving_isochrone.gif" alt="Driving Isochrone Animation" style="position: absolute; top: -10%; left: 0; width: 100%; height: 110%; object-fit: cover; border-radius: 0;">
+</div>
+                    <p style="color: #ff00ff;">Driving Expansion Radius</p>
+                </div>
+                -->
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>
