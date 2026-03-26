@@ -8,18 +8,21 @@
         body { margin: 0; background: #111; color: white; font-family: sans-serif; overflow: hidden; }
         #info { position: absolute; top: 20px; left: 20px; z-index: 100; background: rgba(0,0,0,0.7); padding: 15px; border-radius: 10px; border: 1px solid #00ffff; }
         canvas { display: block; }
-        .controls { position: absolute; bottom: 20px; left: 20px; z-index: 100; display: flex; gap: 10px; }
+        .controls { position: absolute; bottom: 20px; left: 20px; z-index: 100; display: flex; gap: 10px; flex-wrap: wrap; max-width: 90%; }
         button { background: #222; color: #00ffff; border: 1px solid #00ffff; padding: 8px 15px; border-radius: 5px; cursor: pointer; }
         button:hover { background: #00ffff; color: #000; }
+        #loading-bar { position: fixed; top: 0; left: 0; height: 3px; background: #00ffff; width: 0%; transition: width 0.3s; z-index: 1000; }
     </style>
 </head>
 <body>
+    <div id="loading-bar"></div>
     <div id="info">
         <h2>3D Architecture Hub</h2>
         <p>Project: The Highline Oasis</p>
-        <p id="status">Loading Three.js...</p>
+        <p id="status">Ready. Select a model below.</p>
     </div>
     <div class="controls">
+        <button onclick="loadBaseModel()">Base Infrastructure (Large)</button>
         <button onclick="loadModel('up.obj')">Upper Garden</button>
         <button onclick="loadModel('bar.obj')">Barrier/Bar</button>
         <button onclick="loadModel('exit.obj')">Exit Hub</button>
@@ -48,30 +51,61 @@
         function init() {
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x0a0a0a);
-
-            camera = new THREE.Camera(); // Will be replaced on load
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
-            camera.position.set(100, 100, 100);
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 20000);
+            camera.position.set(500, 500, 500);
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             document.body.appendChild(renderer.domElement);
 
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
             scene.add(ambientLight);
 
             const dirLight = new THREE.DirectionalLight(0x00ffff, 1);
-            dirLight.position.set(5, 10, 7.5);
+            dirLight.position.set(500, 1000, 750);
             scene.add(dirLight);
 
             controls = new OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
-
-            document.getElementById('status').innerText = 'Ready. Select a model below.';
             
             window.addEventListener('resize', onWindowResize);
         }
+
+        async function fetchAndCombine(parts) {
+            const blobs = await Promise.all(parts.map(url => fetch(url).then(r => r.blob())));
+            return new Blob(blobs);
+        }
+
+        window.loadBaseModel = async function() {
+            if (currentModel) scene.remove(currentModel);
+            const status = document.getElementById('status');
+            const bar = document.getElementById('loading-bar');
+            status.innerText = 'Reconstructing Base Infrastructure (130MB)...';
+            bar.style.width = '30%';
+
+            try {
+                const parts = [
+                    '../assets/base.obj.part1',
+                    '../assets/base.obj.part2',
+                    '../assets/base.obj.part3',
+                    '../assets/base.obj.part4'
+                ];
+                const combinedBlob = await fetchAndCombine(parts);
+                bar.style.width = '70%';
+                const objectURL = URL.createObjectURL(combinedBlob);
+                
+                const loader = new OBJLoader();
+                loader.load(objectURL, function(obj) {
+                    processLoadedModel(obj, 'Base Infrastructure');
+                    URL.revokeObjectURL(objectURL);
+                    bar.style.width = '100%';
+                    setTimeout(() => bar.style.width = '0%', 1000);
+                });
+            } catch (e) {
+                status.innerText = 'Error combining parts.';
+            }
+        };
 
         window.loadModel = function(fileName) {
             if (currentModel) scene.remove(currentModel);
@@ -79,37 +113,37 @@
 
             const loader = new OBJLoader();
             loader.load('../assets/' + fileName, function (obj) {
-                currentModel = obj;
-                obj.traverse(function (child) {
-                    if (child.isMesh) {
-                        child.material = new THREE.MeshPhongMaterial({ 
-                            color: 0x00ffff, 
-                            wireframe: true,
-                            transparent: true,
-                            opacity: 0.8
-                        });
-                    }
-                });
+                processLoadedModel(obj, fileName);
+            });
+        };
 
-                // Auto-center and scale
-                const box = new THREE.Box3().setFromObject(obj);
-                const center = box.getCenter(new THREE.Vector3());
-                const size = box.getSize(new THREE.Vector3());
-                const maxDim = Math.max(size.x, size.y, size.z);
-                
-                obj.position.sub(center); // Center it
-                
-                const fov = camera.fov * (Math.PI / 180);
-                let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2)) * 1.5;
-                camera.position.set(cameraZ, cameraZ, cameraZ);
-                camera.updateProjectionMatrix();
-                
-                scene.add(obj);
-                document.getElementById('status').innerText = 'Loaded: ' + fileName;
-            }, 
-            (xhr) => { console.log((xhr.loaded / xhr.total * 100) + '% loaded'); },
-            (error) => { document.getElementById('status').innerText = 'Error loading model.'; }
-            );
+        function processLoadedModel(obj, name) {
+            currentModel = obj;
+            obj.traverse(function (child) {
+                if (child.isMesh) {
+                    child.material = new THREE.MeshPhongMaterial({ 
+                        color: 0x00ffff, 
+                        wireframe: true,
+                        transparent: true,
+                        opacity: 0.6
+                    });
+                }
+            });
+
+            const box = new THREE.Box3().setFromObject(obj);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z);
+            
+            obj.position.sub(center);
+            
+            const fov = camera.fov * (Math.PI / 180);
+            let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2)) * 1.5;
+            camera.position.set(cameraZ, cameraZ, cameraZ);
+            camera.updateProjectionMatrix();
+            
+            scene.add(obj);
+            document.getElementById('status').innerText = 'Loaded: ' + name;
         }
 
         function onWindowResize() {
