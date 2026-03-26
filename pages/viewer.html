@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Model Viewer | The Highline Oasis</title>
+    <style>
+        body { margin: 0; background: #111; color: white; font-family: sans-serif; overflow: hidden; }
+        #info { position: absolute; top: 20px; left: 20px; z-index: 100; background: rgba(0,0,0,0.7); padding: 15px; border-radius: 10px; border: 1px solid #00ffff; }
+        canvas { display: block; }
+        .controls { position: absolute; bottom: 20px; left: 20px; z-index: 100; display: flex; gap: 10px; }
+        button { background: #222; color: #00ffff; border: 1px solid #00ffff; padding: 8px 15px; border-radius: 5px; cursor: pointer; }
+        button:hover { background: #00ffff; color: #000; }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h2>3D Architecture Hub</h2>
+        <p>Project: The Highline Oasis</p>
+        <p id="status">Loading Three.js...</p>
+    </div>
+    <div class="controls">
+        <button onclick="loadModel('up.obj')">Upper Garden</button>
+        <button onclick="loadModel('bar.obj')">Barrier/Bar</button>
+        <button onclick="loadModel('exit.obj')">Exit Hub</button>
+    </div>
+
+    <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.156.1/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.156.1/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+
+        let scene, camera, renderer, controls, currentModel;
+
+        init();
+        animate();
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0a0a0a);
+
+            camera = new THREE.Camera(); // Will be replaced on load
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
+            camera.position.set(100, 100, 100);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0x00ffff, 1);
+            dirLight.position.set(5, 10, 7.5);
+            scene.add(dirLight);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+
+            document.getElementById('status').innerText = 'Ready. Select a model below.';
+            
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        window.loadModel = function(fileName) {
+            if (currentModel) scene.remove(currentModel);
+            document.getElementById('status').innerText = 'Loading ' + fileName + '...';
+
+            const loader = new OBJLoader();
+            loader.load('../assets/' + fileName, function (obj) {
+                currentModel = obj;
+                obj.traverse(function (child) {
+                    if (child.isMesh) {
+                        child.material = new THREE.MeshPhongMaterial({ 
+                            color: 0x00ffff, 
+                            wireframe: true,
+                            transparent: true,
+                            opacity: 0.8
+                        });
+                    }
+                });
+
+                // Auto-center and scale
+                const box = new THREE.Box3().setFromObject(obj);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                
+                obj.position.sub(center); // Center it
+                
+                const fov = camera.fov * (Math.PI / 180);
+                let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2)) * 1.5;
+                camera.position.set(cameraZ, cameraZ, cameraZ);
+                camera.updateProjectionMatrix();
+                
+                scene.add(obj);
+                document.getElementById('status').innerText = 'Loaded: ' + fileName;
+            }, 
+            (xhr) => { console.log((xhr.loaded / xhr.total * 100) + '% loaded'); },
+            (error) => { document.getElementById('status').innerText = 'Error loading model.'; }
+            );
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
