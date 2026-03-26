@@ -55,8 +55,9 @@ def create_fusion_animation(mode="walking", travel_speed=75, trip_times=range(1,
         nc = ['#00ffff' if node in subgraph_nodes else 'none' for node in G_proj.nodes()]
         ns = [15 if node in subgraph_nodes else 0 for node in G_proj.nodes()]
         
+        # 降低背景街道亮度：從 #999999 改為較淡的 #333333
         fig, ax = ox.plot_graph(G_proj, node_color=nc, node_size=ns, edge_color='#333333', 
-                                edge_linewidth=0.5, show=False, close=False, bgcolor='black', figsize=(12, 12))
+                                edge_linewidth=0.7, show=False, close=False, bgcolor='black', figsize=(12, 12))
         
         # Overlay the manual points from Smappen
         for _, row in gdf_poi.iterrows():

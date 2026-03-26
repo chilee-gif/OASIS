@@ -128,6 +128,12 @@
             grid-template-columns: 1fr 1fr;
             gap: 30px;
         }
+        .gif-card {
+            background: #000;
+            padding: 10px;
+            border-radius: 12px;
+            border: 1px solid #333;
+        }
         .gif-card img {
             width: 100%;
             border-radius: 8px;
@@ -198,30 +204,41 @@
             <p style="margin-bottom: 40px;">The following visualizations use Dijkstra's algorithm to map the actual street network penetrability from the site's center point.</p>
             
             <div class="gif-grid">
+                <!-- WALKING -->
                 <div class="gif-card">
-                    
-<div style="overflow: hidden; border-radius: 8px; position: relative; padding-top: 100%;">
-    <img src="../Map_Isochrone_Data/walking_isochrone.gif" alt="Walking Isochrone Animation" style="position: absolute; top: -10%; left: 0; width: 100%; height: 110%; object-fit: cover; border-radius: 0;">
-</div>
-                    <p style="color: #00ffff;">Walking Expansion Radius</p>
+                    <div style="overflow: hidden; border-radius: 8px; position: relative; padding-top: 100%;">
+                        <img src="../Map_Isochrone_Data/walking_isochrone.gif" alt="Walking Isochrone Animation" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 0;">
+                    </div>
+                    <p style="color: #00ffff;">Walking (0-30 min)</p>
                 </div>
+                
+                <!-- BIKING -->
                 <div class="gif-card">
-                    
-<div style="overflow: hidden; border-radius: 8px; position: relative; padding-top: 100%;">
-    <img src="../Map_Isochrone_Data/biking_isochrone.gif" alt="Cycling Isochrone Animation" style="position: absolute; top: -10%; left: 0; width: 100%; height: 110%; object-fit: cover; border-radius: 0;">
-</div>
-                    <p style="color: #ffcc00;">Cycling Expansion Radius</p>
+                    <div style="overflow: hidden; border-radius: 8px; position: relative; padding-top: 100%;">
+                        <img src="../Map_Isochrone_Data/biking_isochrone.gif" alt="Cycling Isochrone Animation" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 0;">
+                    </div>
+                    <p style="color: #ffcc00;">Biking (0-30 min)</p>
+                    <div style="text-align: left; padding: 10px; color: #ccc; font-size: 0.85rem; border-top: 1px solid #333;">
+                        <p>• Avg Speed: 15 km/h</p>
+                        <p>• Critical regional connector bridging local neighborhoods.</p>
+                    </div>
                 </div>
-                <!-- 如果有開車或大眾運輸的 GIF 也可以隨時補上 -->
-                <!-- 
+
+                <!-- DRIVING -->
                 <div class="gif-card">
-                    
-<div style="overflow: hidden; border-radius: 8px; position: relative; padding-top: 100%;">
-    <img src="../Map_Isochrone_Data/driving_isochrone.gif" alt="Driving Isochrone Animation" style="position: absolute; top: -10%; left: 0; width: 100%; height: 110%; object-fit: cover; border-radius: 0;">
-</div>
-                    <p style="color: #ff00ff;">Driving Expansion Radius</p>
+                    <div style="overflow: hidden; border-radius: 8px; position: relative; padding-top: 100%;">
+                        <img src="../Map_Isochrone_Data/driving_isochrone.gif" alt="Driving Isochrone Animation" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 0;">
+                    </div>
+                    <p style="color: #ff00ff;">Driving (0-30 min)</p>
                 </div>
-                -->
+
+                <!-- SMAPPEN FUSION -->
+                <div class="gif-card">
+                    <div style="overflow: hidden; border-radius: 8px; position: relative; padding-top: 100%;">
+                        <img src="../Map_Isochrone_Data/thesis_smappen_fusion.gif" alt="Smappen Fusion Animation" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 0;">
+                    </div>
+                    <p style="color: #ffffff; border-top: 1px solid #444; padding-top: 5px;">Smappen Data Fusion</p>
+                </div>
             </div>
         </div>
 

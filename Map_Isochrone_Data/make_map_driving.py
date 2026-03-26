@@ -33,7 +33,9 @@ def create_isochrone(mode, travel_speed, trip_times, network_type):
         nc = ['#ff00ff' if node in subgraph_nodes else 'none' for node in G_proj.nodes()]
         ns = [10 if node in subgraph_nodes else 0 for node in G_proj.nodes()]
         
-        fig, ax = ox.plot_graph(G_proj, node_color=nc, node_size=ns, edge_color='#222222', edge_linewidth=0.5, show=False, close=False, bgcolor='black', figsize=(10,10))
+        # 降低背景街道亮度：從 #999999 改為較淡的 #333333
+        fig, ax = ox.plot_graph(G_proj, node_color=nc, node_size=ns, edge_color='#333333', 
+                                edge_linewidth=0.7, show=False, close=False, bgcolor='black', figsize=(10,10))
         ax.set_title(f"{mode.capitalize()} from Base - {t} minutes", color='white', fontsize=20, pad=10)
         
         filename = f"frames_{mode}/frame_{i:03d}.png"
